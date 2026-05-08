@@ -1,0 +1,29 @@
+[package]
+name = "iscrawl"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["tn3w <tn3w@protonmail.com>"]
+description = "Tiny, allocation-free crawler/bot detection from User-Agent strings. Sub-140ns per call."
+license = "Apache-2.0"
+repository = "https://github.com/tn3w/iscrawl"
+homepage = "https://github.com/tn3w/iscrawl"
+documentation = "https://docs.rs/iscrawl"
+readme = "README.md"
+keywords = ["crawler", "bot", "user-agent", "detection", "spider"]
+categories = ["web-programming", "parser-implementations", "no-std"]
+
+[lib]
+name = "iscrawl"
+path = "src/lib.rs"
+
+[package.metadata.funding]
+buy_me_a_coffee = "tn3w"
+url = "https://www.buymeacoffee.com/tn3w"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
