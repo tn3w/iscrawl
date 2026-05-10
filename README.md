@@ -16,14 +16,14 @@ optional Crawlerdex info lookup
 
 ```toml
 [dependencies]
-iscrawl = "1.1"
+iscrawl = "1.2"
 ```
 
 Database metadata:
 
 ```toml
 [dependencies]
-iscrawl = { version = "1.1", features = ["database"] }
+iscrawl = { version = "1.2", features = ["database"] }
 ```
 
 ## Use
