@@ -1,6 +1,6 @@
 [package]
 name = "iscrawl"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["tn3w <tn3w@protonmail.com>"]
@@ -16,6 +16,10 @@ categories = ["web-programming", "parser-implementations", "no-std"]
 [lib]
 name = "iscrawl"
 path = "src/lib.rs"
+
+[[bench]]
+name = "bench"
+harness = false
 
 [package.metadata.funding]
 buy_me_a_coffee = "tn3w"

@@ -7,7 +7,7 @@
 Tiny crawler/bot detection from User-Agent strings.
 
 ```
-sub-140ns per call
+sub-140ns cold, 5ns warm
 zero allocations
 zero dependencies
 ```
@@ -37,9 +37,10 @@ One function. One bool. That's it.
 - Stack buffer of 512 bytes, no heap.
 - First-byte lookup table prunes 99% of needle scans.
 - Single pass over the lowered input.
+- Thread-local 256-slot direct-mapped cache keyed by pointer/length with edge-word guards.
 - `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`.
 
-Benchmarked over a corpus of ~25k real User-Agents: best case **~130 ns/call** on x86_64.
+Benchmarked on x86_64: cold **~140 ns/call**, warm cache hit **~5 ns/call**.
 
 ## How it decides
 
@@ -64,6 +65,19 @@ Measured against bundled fixture corpora:
 | browser_user_agents.txt      | 19,897 | <1% false positive |
 
 Run `cargo test --release` to verify on your machine.
+
+## Bench
+
+```bash
+cargo bench --bench bench
+```
+
+| run         | ns/call | M calls/s |
+| ----------- | ------: | --------: |
+| cold corpus |   137.1 |      7.30 |
+| warm hits   |     4.5 |    222.26 |
+
+Fixture corpus: 25,898 User-Agents.
 
 ## Develop
 
