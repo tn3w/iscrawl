@@ -16,7 +16,7 @@ zero dependencies
 
 ```toml
 [dependencies]
-iscrawl = "1.0"
+iscrawl = "1.1"
 ```
 
 ## Use
