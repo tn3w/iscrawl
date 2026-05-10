@@ -4,12 +4,12 @@
 [![Docs.rs](https://docs.rs/iscrawl/badge.svg)](https://docs.rs/iscrawl)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Tiny crawler/bot detection from User-Agent strings.
+Fast crawler/bot detection from User-Agent strings.
 
 ```
 sub-140ns cold, 5ns warm
-zero allocations
-zero dependencies
+heuristic bool API
+optional Crawlerdex info lookup
 ```
 
 ## Install
@@ -17,6 +17,13 @@ zero dependencies
 ```toml
 [dependencies]
 iscrawl = "1.1"
+```
+
+Database metadata:
+
+```toml
+[dependencies]
+iscrawl = { version = "1.1", features = ["database"] }
 ```
 
 ## Use
@@ -30,14 +37,36 @@ assert!(!is_crawler(
 ));
 ```
 
-One function. One bool. That's it.
+Default build has no deps. Use `crawler_info` with the `database` feature.
+
+## Database
+
+`crawler_info(user_agent)` returns `Option<&'static CrawlerInfo>` from the
+bundled Crawlerdex DB. Matching is separate from `is_crawler`.
+
+```rust
+use iscrawl::crawler_info;
+
+assert_eq!(
+    crawler_info("Googlebot/2.1").unwrap().description,
+    "Google's main web crawling bot for search indexing"
+);
+```
+
+Update DB:
+
+```bash
+curl -fsSL https://github.com/tn3w/Crawlerdex/releases/latest/download/crawlers.min.json \
+  -o crawlers.min.json
+```
 
 ## Why fast
 
-- Stack buffer of 512 bytes, no heap.
+- `is_crawler`: stack buffer of 512 bytes, no heap.
 - First-byte lookup table prunes 99% of needle scans.
 - Single pass over the lowered input.
 - Thread-local 256-slot direct-mapped cache keyed by pointer/length with edge-word guards.
+- `crawler_info`: Aho-Corasick literals + chunked regex fallback.
 - `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`.
 
 Benchmarked on x86_64: cold **~140 ns/call**, warm cache hit **~5 ns/call**.
@@ -51,7 +80,7 @@ Benchmarked on x86_64: cold **~140 ns/call**, warm cache hit **~5 ns/call**.
 5. If the UA starts with `Mozilla/` or `Opera/` but is missing both an engine token and the `(compatible;` marker: crawler.
 6. Otherwise: browser.
 
-Heuristic, not a database. Trades a sliver of recall for speed and zero maintenance.
+`is_crawler` is heuristic. `crawler_info` is feature-gated + database-backed.
 
 ## Accuracy
 
@@ -70,6 +99,7 @@ Run `cargo test --release` to verify on your machine.
 
 ```bash
 cargo bench --bench bench
+cargo bench --features database --bench database
 ```
 
 | run         | ns/call | M calls/s |
@@ -84,6 +114,7 @@ Fixture corpus: 25,898 User-Agents.
 ```bash
 cargo build --release
 cargo test --release
+cargo test --release --features database
 cargo test --doc
 cargo doc --no-deps --open
 ```

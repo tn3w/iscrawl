@@ -1,8 +1,8 @@
-//! Tiny, allocation-free crawler/bot detection from User-Agent strings.
+//! Fast crawler/bot detection from User-Agent strings.
 //!
-//! One public function: [`is_crawler`]. Returns `true` for crawlers/bots,
-//! `false` for human browsers. Stack-only, ~140ns cold, ~5ns warm via a
-//! thread-local cache.
+//! [`is_crawler`] returns `true` for crawlers/bots and `false` for human
+//! browsers. With the `database` feature, `crawler_info` separately returns
+//! matching Crawlerdex metadata.
 //!
 //! # Example
 //!
@@ -21,12 +21,147 @@
 //! 2. Input over 512 bytes: `false` (oversized, not classified).
 //! 3. Crawler keyword present (`bot`, `crawl`, `spider`, `+http`, `@`, ...): crawler.
 //! 4. No `Mozilla/`/`Opera/` prefix and no browser engine token: crawler.
-//! 5. `Mozilla/`/`Opera/` prefix lacking both an engine token and `(compatible;`: crawler.
+//! 5. `Mozilla/`/`Opera/` prefix lacking engine and `(compatible;`: crawler.
 //! 6. Otherwise: browser.
 //!
-//! Heuristic, not a database. Trades a sliver of recall for speed.
+//! Heuristic bool API plus optional database lookup.
 
 #![deny(missing_docs)]
+
+#[cfg(feature = "database")]
+use aho_corasick::AhoCorasick;
+#[cfg(feature = "database")]
+use regex::{Regex, RegexSet};
+#[cfg(feature = "database")]
+use serde::Deserialize;
+#[cfg(feature = "database")]
+use std::sync::LazyLock;
+
+/// Crawlerdex metadata for a matched User-Agent pattern.
+#[cfg(feature = "database")]
+#[derive(Debug, Deserialize)]
+pub struct CrawlerInfo {
+    /// Regex pattern matched against the User-Agent.
+    pub pattern: String,
+    /// Upstream documentation URL, when known.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Human-readable crawler description.
+    pub description: String,
+    /// Crawler category tags.
+    pub tags: Vec<String>,
+    /// Reverse-DNS suffixes, when known.
+    #[serde(default)]
+    pub rdns: Vec<String>,
+}
+
+/// Bundled Crawlerdex JSON database.
+#[cfg(feature = "database")]
+const CRAWLER_DATABASE: &str = include_str!("../crawlers.min.json");
+
+/// Regexes per database chunk. Tune with `cargo bench --bench database`.
+#[cfg(feature = "database")]
+const DATABASE_CHUNK_SIZE: usize = 128;
+
+/// Parsed Crawlerdex records.
+#[cfg(feature = "database")]
+static CRAWLERS: LazyLock<Vec<CrawlerInfo>> = LazyLock::new(|| {
+    serde_json::from_str(CRAWLER_DATABASE).expect("bundled crawler database is valid")
+});
+
+/// Database matchers split into literals and regexes.
+#[cfg(feature = "database")]
+static DATABASE_MATCHERS: LazyLock<DatabaseMatchers> = LazyLock::new(|| {
+    let mut literal_patterns = Vec::new();
+    let mut literal_indices = Vec::new();
+    let mut regex_patterns = Vec::new();
+
+    for (index, crawler) in CRAWLERS.iter().enumerate() {
+        if let Some(literal) = regex_literal(&crawler.pattern) {
+            literal_indices.push(index);
+            literal_patterns.push(literal);
+            continue;
+        }
+
+        if Regex::new(&crawler.pattern).is_ok() {
+            regex_patterns.push((index, crawler.pattern.as_str()));
+        }
+    }
+
+    DatabaseMatchers {
+        literals: AhoCorasick::new(&literal_patterns).expect("bundled crawler literals are valid"),
+        literal_indices,
+        regexes: regex_chunks(&regex_patterns),
+    }
+});
+
+/// Compiled database matchers.
+#[cfg(feature = "database")]
+struct DatabaseMatchers {
+    literals: AhoCorasick,
+    literal_indices: Vec<usize>,
+    regexes: Vec<RegexChunk>,
+}
+
+/// Compiled regex chunk and source indices.
+#[cfg(feature = "database")]
+struct RegexChunk {
+    patterns: RegexSet,
+    indices: Vec<usize>,
+}
+
+/// Convert a simple regex pattern to a literal.
+#[cfg(feature = "database")]
+fn regex_literal(pattern: &str) -> Option<String> {
+    let mut literal = String::with_capacity(pattern.len());
+    let mut chars = pattern.chars();
+
+    while let Some(char) = chars.next() {
+        if char == '\\' {
+            literal.push(regex_literal_escape(chars.next()?)?);
+            continue;
+        }
+
+        if regex_meta(char) {
+            return None;
+        }
+
+        literal.push(char);
+    }
+
+    (!literal.is_empty()).then_some(literal)
+}
+
+/// Return escaped literal char when supported.
+#[cfg(feature = "database")]
+fn regex_literal_escape(char: char) -> Option<char> {
+    match char {
+        '/' | '.' | '-' | '_' | ' ' | ':' | ')' | '(' | '!' => Some(char),
+        _ => None,
+    }
+}
+
+/// Return true for regex metacharacters.
+#[cfg(feature = "database")]
+fn regex_meta(char: char) -> bool {
+    matches!(
+        char,
+        '.' | '^' | '$' | '*' | '+' | '?' | '{' | '}' | '[' | ']' | '|' | '(' | ')'
+    )
+}
+
+/// Build chunked regex sets.
+#[cfg(feature = "database")]
+fn regex_chunks(patterns: &[(usize, &str)]) -> Vec<RegexChunk> {
+    patterns
+        .chunks(DATABASE_CHUNK_SIZE)
+        .map(|entries| RegexChunk {
+            indices: entries.iter().map(|(index, _)| *index).collect(),
+            patterns: RegexSet::new(entries.iter().map(|(_, pattern)| *pattern))
+                .expect("validated crawler regexes are valid"),
+        })
+        .collect()
+}
 
 /// Substrings whose presence flags a UA as a crawler. Stored as
 /// `(first_byte, rest)` so the hot loop can skip on a 256-entry table lookup.
@@ -124,6 +259,44 @@ pub fn is_crawler(user_agent: &str) -> bool {
         };
         result
     })
+}
+
+/// Returns Crawlerdex metadata for `user_agent`, or `None` when no database
+/// pattern matches.
+///
+/// The database is bundled from Crawlerdex:
+///
+/// ```bash
+/// curl -fsSL \
+///   https://github.com/tn3w/Crawlerdex/releases/latest/download/crawlers.min.json \
+///   -o crawlers.min.json
+/// ```
+///
+/// Matching uses chunked `RegexSet`s over the bundled patterns.
+///
+/// # Example
+///
+/// ```
+/// use iscrawl::crawler_info;
+///
+/// let info = crawler_info("Googlebot/2.1").unwrap();
+/// assert!(info.tags.iter().any(|tag| tag == "search-engine"));
+/// ```
+#[cfg(feature = "database")]
+pub fn crawler_info(user_agent: &str) -> Option<&'static CrawlerInfo> {
+    let matchers = &*DATABASE_MATCHERS;
+
+    if let Some(matched) = matchers.literals.find(user_agent) {
+        return CRAWLERS.get(matchers.literal_indices[matched.pattern()]);
+    }
+
+    for chunk in &matchers.regexes {
+        let matches = chunk.patterns.matches(user_agent);
+        if let Some(index) = matches.iter().next() {
+            return CRAWLERS.get(chunk.indices[index]);
+        }
+    }
+    None
 }
 
 /// Classify without consulting the thread-local cache.
