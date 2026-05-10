@@ -24,11 +24,14 @@ jobs:
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          PUBLISHED=$(curl -s "https://crates.io/api/v1/crates/${NAME}/${VERSION}" | grep -o '"version"' | head -1)
-          if [ -z "$PUBLISHED" ]; then
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${NAME}/${VERSION}")
+          if [ "$STATUS" = "404" ]; then
             echo "is_new=true" >> "$GITHUB_OUTPUT"
-          else
+          elif [ "$STATUS" = "200" ]; then
             echo "is_new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Unexpected crates.io response: $STATUS"
+            exit 1
           fi
 
   test:
