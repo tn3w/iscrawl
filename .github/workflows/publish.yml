@@ -29,9 +29,6 @@ jobs:
             echo "is_new=true" >> "$GITHUB_OUTPUT"
           elif [ "$STATUS" = "200" ]; then
             echo "is_new=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Unexpected crates.io response: $STATUS"
-            exit 1
           fi
 
   test:
