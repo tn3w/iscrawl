@@ -56,16 +56,13 @@ jobs:
 
       - name: Clippy
         if: matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable'
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Build
         run: cargo build --release --verbose
 
       - name: Test
-        run: cargo test --release --verbose
-
-      - name: Doctests
-        run: cargo test --doc --verbose
+        run: cargo test --release --all-features --verbose
 
       - name: Docs build
         if: matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable'

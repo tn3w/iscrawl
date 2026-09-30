@@ -4,13 +4,7 @@
 [![Docs.rs](https://docs.rs/iscrawl/badge.svg)](https://docs.rs/iscrawl)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Fast crawler/bot detection from User-Agent strings.
-
-```
-sub-140ns cold, 5ns warm
-heuristic bool API
-optional Crawlerdex info lookup
-```
+Fast crawler/bot detection from User-Agent strings. ~155 ns cold, ~5 ns warm.
 
 ## Install
 
@@ -19,12 +13,14 @@ optional Crawlerdex info lookup
 iscrawl = "1.2"
 ```
 
-Database metadata:
+With Crawlerdex metadata lookup:
 
 ```toml
 [dependencies]
 iscrawl = { version = "1.2", features = ["database"] }
 ```
+
+Default build has no dependencies.
 
 ## Use
 
@@ -37,23 +33,31 @@ assert!(!is_crawler(
 ));
 ```
 
-Default build has no deps. Use `crawler_info` with the `database` feature.
+## Heuristic
+
+1. Empty input: crawler.
+2. Over 512 bytes: browser (not classified).
+3. Crawler keyword (`http`, `@`, `bot`, `crawl`, `spider`, `checker`, `feed`, `fetch`,
+   `monitor`, `ptst`, `preview`): crawler.
+4. No browser engine token (`gecko`, `webkit`, `msie`, `trident`, `opera`, `konqueror`,
+   `links`, `icab`, `netfront`, `lynx`, `mosaic`, `netsurf`): crawler.
+5. Otherwise: browser.
+
+Matching is ASCII case-insensitive.
 
 ## Database
 
-`crawler_info(user_agent)` returns `Option<&'static CrawlerInfo>` from the
-bundled Crawlerdex DB. Matching is separate from `is_crawler`.
+`crawler_info(user_agent)` returns `Option<&'static CrawlerInfo>` from the bundled
+Crawlerdex database. Independent of `is_crawler`.
 
 ```rust
 use iscrawl::crawler_info;
 
-assert_eq!(
-    crawler_info("Googlebot/2.1").unwrap().description,
-    "Google's main web crawling bot for search indexing"
-);
+let info = crawler_info("Googlebot/2.1").unwrap();
+assert!(info.tags.iter().any(|tag| tag == "search-engine"));
 ```
 
-Update DB:
+Update the database:
 
 ```bash
 curl -fsSL https://github.com/tn3w/Crawlerdex/releases/latest/download/crawlers.min.json \
@@ -62,90 +66,60 @@ curl -fsSL https://github.com/tn3w/Crawlerdex/releases/latest/download/crawlers.
 
 ## Why fast
 
-- `is_crawler`: stack buffer of 512 bytes, no heap.
-- First-byte lookup table prunes 99% of needle scans.
-- Single pass over the lowered input.
-- Thread-local 256-slot direct-mapped cache keyed by pointer/length with edge-word guards.
-- `crawler_info`: Aho-Corasick literals + chunked regex fallback.
+- Lowercase copy into a 512-byte stack buffer, no heap.
+- One pass: a 64 KiB table of needle-start byte pairs skips almost every position.
+- Thread-local 256-slot cache keyed by pointer and length, guarded by first/last 8 bytes.
+- `crawler_info`: Aho-Corasick for literal patterns, chunked `RegexSet` for the rest.
 - `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`.
-
-Benchmarked on x86_64: cold **~140 ns/call**, warm cache hit **~5 ns/call**.
-
-## How it decides
-
-1. Empty input counts as crawler.
-2. Input over 512 bytes is rejected (returns `false`).
-3. If any crawler keyword (`bot`, `crawl`, `spider`, `scanner`, `+http`, `@`, `archive`, ...) appears: crawler.
-4. If the UA does not start with `Mozilla/` or `Opera/` and has no known browser engine token (`gecko`, `webkit`, `chrome`, `firefox`, `msie`, `edge`, `opera`, ...): crawler.
-5. If the UA starts with `Mozilla/` or `Opera/` but is missing both an engine token and the `(compatible;` marker: crawler.
-6. Otherwise: browser.
-
-`is_crawler` is heuristic. `crawler_info` is feature-gated + database-backed.
 
 ## Accuracy
 
-Measured against bundled fixture corpora:
+Bundled fixture corpora (`tests/fixtures`):
 
-| corpus                       | size   | result             |
-| ---------------------------- | ------ | ------------------ |
-| crawler_user_agents.txt      | 2,149  | 95.4% detected     |
-| loadkpi_crawlers.txt         | 3,696  | 94.7% detected     |
-| crawler_user_agents_pgts.txt | 156    | 98.1% detected     |
-| browser_user_agents.txt      | 19,897 | <1% false positive |
+| corpus                       |   size | result             |
+| ---------------------------- | -----: | ------------------ |
+| crawler_user_agents.txt      |  2,149 | 96.2% detected     |
+| loadkpi_crawlers.txt         |  3,696 | 95.7% detected     |
+| crawler_user_agents_pgts.txt |    156 | 98.7% detected     |
+| browser_user_agents.txt      | 19,897 | 0.12% false positive |
 
-Run `cargo test --release` to verify on your machine.
+Misses are mostly headless browsers and monitors that spoof a full browser UA; use
+`crawler_info` for those.
 
 ## Bench
 
 ```bash
-cargo bench --bench bench
-cargo bench --features database --bench database
+cargo bench                      # heuristic
+cargo bench --features database  # plus database lookup
 ```
 
-| run         | ns/call | M calls/s |
-| ----------- | ------: | --------: |
-| cold corpus |   137.1 |      7.30 |
-| warm hits   |     4.5 |    222.26 |
+| run         | ns/call |
+| ----------- | ------: |
+| cold corpus |     156 |
+| warm hits   |       5 |
+| database    |   1,040 |
 
-Fixture corpus: 25,898 User-Agents.
+25,898 fixture User-Agents, x86_64.
 
 ## Develop
 
 ```bash
-cargo build --release
-cargo test --release
-cargo test --release --features database
-cargo test --doc
-cargo doc --no-deps --open
-```
-
-## Format
-
-Standard formatting across Rust + markdown/yaml.
-
-```bash
+cargo test --release --all-features
 cargo fmt --all
-cargo clippy --all-targets -- -D warnings
-npx --yes prettier --write --single-quote --print-width=100 --trailing-comma=es5 --end-of-line=lf "**/*.{md,yml}"
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-CI enforces `cargo fmt --check` and `cargo clippy -D warnings` on every push.
+`rustfmt.toml` sets `max_width = 90`. CI enforces fmt and clippy.
 
 ## Publish
 
-Pushes to `main`/`master` trigger [`.github/workflows/publish.yml`](.github/workflows/publish.yml):
-
-1. Reads `name` + `version` from `Cargo.toml`.
-2. Skips if that version is already on crates.io.
-3. Tests on Ubuntu, macOS, Windows × stable, beta.
-4. Runs `cargo publish` using `CARGO_REGISTRY_TOKEN`.
-5. Tags the commit `vX.Y.Z`.
-
-Bump `version` in `Cargo.toml`, push to `main`, done.
+Pushes to `main`/`master` run [publish.yml](.github/workflows/publish.yml): skip if the
+`Cargo.toml` version is already on crates.io, else test (Ubuntu/macOS/Windows × stable/beta),
+`cargo publish`, tag `vX.Y.Z`. Bump `version` and push.
 
 ## Funding
 
-If this saved you time, [buy me a coffee](https://www.buymeacoffee.com/tn3w).
+[Buy me a coffee](https://www.buymeacoffee.com/tn3w).
 
 ## License
 

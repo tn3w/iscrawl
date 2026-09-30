@@ -1,6 +1,6 @@
 [package]
 name = "iscrawl"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2024"
 rust-version = "1.85"
 authors = ["tn3w <tn3w@protonmail.com>"]
@@ -20,19 +20,10 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 
 [features]
-default = []
 database = ["dep:aho-corasick", "dep:regex", "dep:serde", "dep:serde_json"]
-
-[lib]
-name = "iscrawl"
-path = "src/lib.rs"
 
 [[bench]]
 name = "bench"
-harness = false
-
-[[bench]]
-name = "database"
 harness = false
 
 [package.metadata.funding]

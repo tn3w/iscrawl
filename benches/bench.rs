@@ -2,119 +2,135 @@ use iscrawl::is_crawler;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-const CRAWLER_UAS: &str = include_str!("../tests/fixtures/crawler_user_agents.txt");
-const LOADKPI_CRAWLERS: &str = include_str!("../tests/fixtures/loadkpi_crawlers.txt");
-const PGTS_CRAWLERS: &str = include_str!("../tests/fixtures/crawler_user_agents_pgts.txt");
-const BROWSER_UAS: &str = include_str!("../tests/fixtures/browser_user_agents.txt");
+const FIXTURES: [&str; 3] = [
+    include_str!("../tests/fixtures/crawler_user_agents.txt"),
+    include_str!("../tests/fixtures/loadkpi_crawlers.txt"),
+    include_str!("../tests/fixtures/crawler_user_agents_pgts.txt"),
+];
+const BROWSER_FIXTURE: &str = include_str!("../tests/fixtures/browser_user_agents.txt");
 
 const RUNS: usize = 15;
 const COLD_PASSES: usize = 16;
-const HOT_REPEATS: usize = 64;
+const WARM_REPEATS: usize = 64;
+
+struct Run {
+    elapsed: Duration,
+    calls: usize,
+    positives: usize,
+}
+
+struct Summary {
+    median: f64,
+    best: f64,
+    mean: f64,
+    positives: usize,
+}
 
 fn main() {
-    let crawler_count = CRAWLER_UAS.lines().count()
-        + LOADKPI_CRAWLERS.lines().count()
-        + PGTS_CRAWLERS.lines().count();
-    let browser_count = BROWSER_UAS.lines().count();
+    let crawler_count: usize =
+        FIXTURES.iter().map(|fixture| fixture.lines().count()).sum();
+    let corpus: Vec<&str> = FIXTURES
+        .iter()
+        .chain([&BROWSER_FIXTURE])
+        .flat_map(|fixture| fixture.lines())
+        .collect();
+    assert!(corpus.len() > 256, "corpus must overflow the cache");
 
-    let mut corpus = Vec::with_capacity(crawler_count + browser_count);
-    corpus.extend(CRAWLER_UAS.lines());
-    corpus.extend(LOADKPI_CRAWLERS.lines());
-    corpus.extend(PGTS_CRAWLERS.lines());
-    corpus.extend(BROWSER_UAS.lines());
-
-    let total = corpus.len();
-    assert!(total > 256, "fixture corpus should overflow the cache");
-
-    let orders = random_orders(total);
-    let cold = summarize(
-        orders
-            .iter()
-            .map(|order| bench_cold_passes(&corpus, order))
-            .collect(),
-    );
-    let hot = summarize(
-        orders
-            .iter()
-            .map(|order| bench_hot_hits(&corpus, order))
-            .collect(),
-    );
-
-    println!("fixtures: {total} total ({crawler_count} crawler, {browser_count} browser)");
     println!(
-        "runs: {RUNS}, random order, cold passes/run: {COLD_PASSES}, warm repeats/ua/run: {HOT_REPEATS}"
+        "fixtures: {} total ({crawler_count} crawler), {RUNS} runs, random order",
+        corpus.len()
     );
+    report("cold corpus", &corpus, |corpus, order| {
+        measure(corpus, order, COLD_PASSES, |user_agent| {
+            is_crawler(user_agent)
+        })
+    });
+    report("warm hits", &corpus, warm_run);
+    report_database(&corpus);
+}
+
+#[cfg(feature = "database")]
+fn report_database(corpus: &[&str]) {
+    const DATABASE_PASSES: usize = 4;
+
+    report("database", corpus, |corpus, order| {
+        let lookup = |user_agent: &str| iscrawl::crawler_info(user_agent).is_some();
+        measure(corpus, order, DATABASE_PASSES, lookup)
+    });
+}
+
+#[cfg(not(feature = "database"))]
+fn report_database(_corpus: &[&str]) {
+    println!("database: run with --features database");
+}
+
+fn report(name: &str, corpus: &[&str], run: impl Fn(&[&str], &[usize]) -> Run) {
+    let runs: Vec<Run> = (0..RUNS)
+        .map(|seed| run(corpus, &shuffled_order(corpus.len(), seed as u64)))
+        .collect();
+    let summary = summarize(runs);
+
     println!(
-        "cold corpus: {:>6.1} ns/call median, {:>6.1} best, {:>6.1} mean, {:>7.2} M calls/s, {} true/run",
-        cold.median_ns,
-        cold.best_ns,
-        cold.mean_ns,
-        calls_per_second(cold.median_ns),
-        cold.true_count
-    );
-    println!(
-        "warm hits:   {:>6.1} ns/call median, {:>6.1} best, {:>6.1} mean, {:>7.2} M calls/s, {} true/run",
-        hot.median_ns,
-        hot.best_ns,
-        hot.mean_ns,
-        calls_per_second(hot.median_ns),
-        hot.true_count
+        "{name:<12} {:>7.1} ns/call median, {:>7.1} best, {:>7.1} mean, \
+         {:>7.2} M calls/s, {} positives/run",
+        summary.median,
+        summary.best,
+        summary.mean,
+        1_000.0 / summary.median,
+        summary.positives
     );
 }
 
-fn bench_cold_passes(corpus: &[&str], order: &[usize]) -> Run {
-    let mut true_count = 0usize;
+fn measure(
+    corpus: &[&str],
+    order: &[usize],
+    passes: usize,
+    check: impl Fn(&str) -> bool,
+) -> Run {
+    let mut positives = 0;
     let start = Instant::now();
 
-    for _ in 0..COLD_PASSES {
+    for _ in 0..passes {
         for &index in order {
-            true_count += black_box(is_crawler(black_box(corpus[index]))) as usize;
+            positives += black_box(check(black_box(corpus[index]))) as usize;
         }
     }
 
     Run {
         elapsed: start.elapsed(),
-        calls: COLD_PASSES * corpus.len(),
-        true_count,
+        calls: passes * corpus.len(),
+        positives,
     }
 }
 
-fn bench_hot_hits(corpus: &[&str], order: &[usize]) -> Run {
-    let mut true_count = 0usize;
-    let mut calls = 0usize;
+fn warm_run(corpus: &[&str], order: &[usize]) -> Run {
+    let mut positives = 0;
     let start = Instant::now();
 
     for &index in order {
-        let ua = corpus[index];
-        black_box(is_crawler(black_box(ua)));
-        for _ in 0..HOT_REPEATS {
-            true_count += black_box(is_crawler(black_box(ua))) as usize;
+        let user_agent = black_box(corpus[index]);
+        is_crawler(user_agent);
+        for _ in 0..WARM_REPEATS {
+            positives += black_box(is_crawler(user_agent)) as usize;
         }
-        calls += HOT_REPEATS;
     }
 
     Run {
         elapsed: start.elapsed(),
-        calls,
-        true_count,
+        calls: order.len() * WARM_REPEATS,
+        positives,
     }
 }
 
-fn random_orders(len: usize) -> Vec<Vec<usize>> {
-    (0..RUNS)
-        .map(|run| {
-            let mut order: Vec<_> = (0..len).collect();
-            shuffle(&mut order, 0x9e37_79b9_7f4a_7c15 ^ run as u64);
-            order
-        })
-        .collect()
-}
+fn shuffled_order(length: usize, seed: u64) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..length).collect();
+    let mut state = 0x9e37_79b9_7f4a_7c15 ^ seed;
 
-fn shuffle(values: &mut [usize], mut state: u64) {
-    for i in (1..values.len()).rev() {
+    for index in (1..length).rev() {
         state = splitmix64(state);
-        values.swap(i, state as usize % (i + 1));
+        order.swap(index, state as usize % (index + 1));
     }
+    order
 }
 
 fn splitmix64(mut value: u64) -> u64 {
@@ -124,44 +140,23 @@ fn splitmix64(mut value: u64) -> u64 {
     value ^ (value >> 31)
 }
 
-struct Run {
-    elapsed: Duration,
-    calls: usize,
-    true_count: usize,
-}
-
-struct Summary {
-    median_ns: f64,
-    best_ns: f64,
-    mean_ns: f64,
-    true_count: usize,
-}
-
 fn summarize(runs: Vec<Run>) -> Summary {
-    let true_count = runs[0].true_count;
+    let positives = runs[0].positives;
     assert!(
-        runs.iter().all(|run| run.true_count == true_count),
+        runs.iter().all(|run| run.positives == positives),
         "benchmark runs produced inconsistent results"
     );
 
-    let mut samples: Vec<_> = runs
+    let mut samples: Vec<f64> = runs
         .iter()
-        .map(|run| ns_per_call(run.elapsed, run.calls))
+        .map(|run| run.elapsed.as_nanos() as f64 / run.calls as f64)
         .collect();
     samples.sort_by(f64::total_cmp);
 
     Summary {
-        median_ns: samples[samples.len() / 2],
-        best_ns: samples[0],
-        mean_ns: samples.iter().sum::<f64>() / samples.len() as f64,
-        true_count,
+        median: samples[samples.len() / 2],
+        best: samples[0],
+        mean: samples.iter().sum::<f64>() / samples.len() as f64,
+        positives,
     }
-}
-
-fn ns_per_call(elapsed: Duration, calls: usize) -> f64 {
-    elapsed.as_nanos() as f64 / calls as f64
-}
-
-fn calls_per_second(ns_per_call: f64) -> f64 {
-    1_000.0 / ns_per_call
 }
