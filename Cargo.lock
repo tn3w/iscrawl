@@ -17,6 +17,7 @@ version = "1.2.1"
 dependencies = [
  "aho-corasick",
  "regex",
+ "regex-syntax",
  "serde",
  "serde_json",
 ]

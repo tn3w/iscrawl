@@ -69,7 +69,9 @@ curl -fsSL https://github.com/tn3w/Crawlerdex/releases/latest/download/crawlers.
 - Lowercase copy into a 512-byte stack buffer, no heap.
 - One pass: a 64 KiB table of needle-start byte pairs skips almost every position.
 - Thread-local 256-slot cache keyed by pointer and length, guarded by first/last 8 bytes.
-- `crawler_info`: Aho-Corasick for literal patterns, chunked `RegexSet` for the rest.
+- `crawler_info`: one Aho-Corasick DFA over literal patterns and the required literal
+  (prefix or suffix) of each regex; a regex runs only when its literal appears.
+  Costs ~13 MB and ~25 ms on first use.
 - `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`.
 
 ## Accuracy
@@ -97,7 +99,7 @@ cargo bench --features database  # plus database lookup
 | ----------- | ------: |
 | cold corpus |     156 |
 | warm hits   |       5 |
-| database    |   1,040 |
+| database    |     310 |
 
 25,898 fixture User-Agents, x86_64.
 

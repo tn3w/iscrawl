@@ -24,6 +24,16 @@ const KNOWN_CRAWLERS: &[(&str, &str, &str)] = &[
     ("Slackbot-LinkExpanding 1.0", "Slackbot", "social-preview"),
     ("facebookexternalhit/1.1", "facebook", "social-preview"),
     ("curl/7.81.0", "^curl", "http-library"),
+    (
+        "Mozilla/5.0 (compatible; AhrefsBot/7.0; +http://ahrefs.com/robot/)",
+        "Ahrefs(Bot|SiteAudit)",
+        "seo",
+    ),
+    (
+        "Mozilla/5.0 (compatible; SemrushBot/7~bl)",
+        "S[eE][mM]rushBot",
+        "seo",
+    ),
 ];
 
 const BROWSERS: &[&str] = &[
@@ -174,4 +184,14 @@ fn info_is_independent_of_heuristic() {
     assert!(crawler_info("curl/7.81.0").is_some());
     assert!(iscrawl::is_crawler("some-unknown-tool/1.0"));
     assert!(crawler_info("some-unknown-tool/1.0").is_none());
+}
+
+#[test]
+fn regex_patterns_verified_after_literal_gate() {
+    let semrush = crawler_info("SemrushBot/7").unwrap();
+    assert_eq!(semrush.pattern, "S[eE][mM]rushBot");
+    assert!(crawler_info("SEMRUSHBOT/7").is_none());
+    assert!(crawler_info("Ahrefs").is_none());
+    assert!(crawler_info("PixCCriteo").is_none());
+    assert!(crawler_info("Pix and Criteo").is_some());
 }
