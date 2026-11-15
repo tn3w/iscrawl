@@ -1,17 +1,15 @@
 use aho_corasick::{AhoCorasick, AhoCorasickKind};
-use regex::Regex;
-use regex_syntax::hir::literal::{ExtractKind, Extractor};
 use serde::Deserialize;
 use std::sync::LazyLock;
 
 const CRAWLER_DATABASE: &str = include_str!("../crawlers.min.json");
-const MIN_LITERAL_LENGTH: usize = 3;
 
-/// Crawlerdex metadata for a matched User-Agent pattern.
+/// uaid metadata for a matched User-Agent.
 #[derive(Debug, Deserialize)]
 pub struct CrawlerInfo {
-    /// Regex pattern matched against the User-Agent.
-    pub pattern: String,
+    /// Lowercase substrings tested against the lowercased User-Agent.
+    #[serde(rename = "match")]
+    pub rules: Vec<Rule>,
     /// Upstream documentation URL, when known.
     #[serde(default)]
     pub url: Option<String>,
@@ -24,15 +22,25 @@ pub struct CrawlerInfo {
     pub rdns: Vec<String>,
 }
 
-struct Matchers {
-    automaton: AhoCorasick,
-    candidates: Vec<Candidate>,
-    ungated: Vec<(usize, Regex)>,
+/// One uaid match rule: a substring, or several that must all appear.
+/// A leading `^` anchors a substring to the start of the User-Agent.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum Rule {
+    /// A single substring.
+    Part(String),
+    /// Substrings that must all appear.
+    Parts(Vec<String>),
 }
 
 struct Candidate {
     crawler: usize,
-    verify: Option<Regex>,
+    rest: Vec<&'static str>,
+}
+
+struct Matchers {
+    automaton: AhoCorasick,
+    candidates: Vec<Candidate>,
 }
 
 static CRAWLERS: LazyLock<Vec<CrawlerInfo>> = LazyLock::new(|| {
@@ -40,35 +48,25 @@ static CRAWLERS: LazyLock<Vec<CrawlerInfo>> = LazyLock::new(|| {
 });
 
 static MATCHERS: LazyLock<Matchers> = LazyLock::new(|| {
-    let mut needles = Vec::new();
-    let mut candidates = Vec::new();
-    let mut ungated = Vec::new();
+    let mut rules: Vec<(usize, Vec<&'static str>)> = CRAWLERS
+        .iter()
+        .enumerate()
+        .flat_map(|(crawler, info)| {
+            info.rules.iter().map(move |rule| (crawler, parts(rule)))
+        })
+        .collect();
+    rules.sort_by_key(|(_, parts)| {
+        std::cmp::Reverse(parts.iter().map(|part| part.len()).sum::<usize>())
+    });
 
-    for (crawler, info) in CRAWLERS.iter().enumerate() {
-        if let Some(literal) = as_literal(&info.pattern) {
-            needles.push(literal.into_bytes());
-            candidates.push(Candidate {
-                crawler,
-                verify: None,
-            });
-            continue;
-        }
-
-        let Ok(regex) = Regex::new(&info.pattern) else {
-            continue;
-        };
-        let Some(gates) = required_literals(&info.pattern) else {
-            ungated.push((crawler, regex));
-            continue;
-        };
-        for gate in gates {
-            needles.push(gate);
-            candidates.push(Candidate {
-                crawler,
-                verify: Some(regex.clone()),
-            });
-        }
-    }
+    let needles: Vec<&str> = rules.iter().map(|(_, parts)| parts[0]).collect();
+    let candidates = rules
+        .into_iter()
+        .map(|(crawler, parts)| Candidate {
+            crawler,
+            rest: parts[1..].to_vec(),
+        })
+        .collect();
 
     Matchers {
         automaton: AhoCorasick::builder()
@@ -76,69 +74,30 @@ static MATCHERS: LazyLock<Matchers> = LazyLock::new(|| {
             .build(&needles)
             .expect("bundled needles are valid"),
         candidates,
-        ungated,
     }
 });
 
-fn as_literal(pattern: &str) -> Option<String> {
-    let mut literal = String::with_capacity(pattern.len());
-    let mut chars = pattern.chars();
-
-    while let Some(char) = chars.next() {
-        match char {
-            '\\' => literal.push(literal_escape(chars.next()?)?),
-            _ if is_regex_meta(char) => return None,
-            _ => literal.push(char),
-        }
-    }
-
-    (!literal.is_empty()).then_some(literal)
+fn parts(rule: &'static Rule) -> Vec<&'static str> {
+    let mut parts: Vec<&str> = match rule {
+        Rule::Part(part) => vec![part],
+        Rule::Parts(parts) => parts.iter().map(String::as_str).collect(),
+    };
+    parts.sort_by_key(|part| std::cmp::Reverse(part.len()));
+    parts
 }
 
-fn literal_escape(char: char) -> Option<char> {
-    "/.-_ :)(!".contains(char).then_some(char)
-}
-
-fn is_regex_meta(char: char) -> bool {
-    ".^$*+?{}[]|()".contains(char)
-}
-
-fn required_literals(pattern: &str) -> Option<Vec<Vec<u8>>> {
-    let hir = regex_syntax::parse(pattern).ok()?;
-
-    [ExtractKind::Prefix, ExtractKind::Suffix]
-        .into_iter()
-        .filter_map(|kind| {
-            let sequence = Extractor::new().kind(kind).extract(&hir);
-            Some(
-                sequence
-                    .literals()?
-                    .iter()
-                    .map(|literal| literal.as_bytes().to_vec())
-                    .collect(),
-            )
-        })
-        .filter(|literals: &Vec<Vec<u8>>| shortest_length(literals) >= MIN_LITERAL_LENGTH)
-        .max_by_key(|literals| shortest_length(literals))
-}
-
-fn shortest_length(literals: &[Vec<u8>]) -> usize {
-    literals.iter().map(Vec::len).min().unwrap_or(0)
-}
-
-/// Returns Crawlerdex metadata for `user_agent`, or `None` when no database
-/// pattern matches.
+/// Returns uaid metadata for `user_agent`, or `None` when no rule matches.
 ///
-/// The database is bundled from Crawlerdex:
+/// The database is bundled from [uaid](https://github.com/tn3w/uaid):
 ///
 /// ```bash
-/// curl -fsSL \
-///   https://github.com/tn3w/Crawlerdex/releases/latest/download/crawlers.min.json \
-///   -o crawlers.min.json
+/// curl -fsSL https://raw.githubusercontent.com/tn3w/uaid/main/crawlers.json \
+///   | jq -c 'map(del(.instances, .addition_date, .depends_on))' > crawlers.min.json
 /// ```
 ///
-/// Matching uses one Aho-Corasick automaton over literals and required regex prefixes;
-/// candidate regexes run only when their prefix appears.
+/// Matching is case-insensitive. One Aho-Corasick automaton finds the longest part of
+/// every rule; the remaining parts are checked only for those hits. The most specific
+/// (longest) matching rule wins.
 ///
 /// # Example
 ///
@@ -150,24 +109,17 @@ fn shortest_length(literals: &[Vec<u8>]) -> usize {
 /// ```
 pub fn crawler_info(user_agent: &str) -> Option<&'static CrawlerInfo> {
     let matchers = &*MATCHERS;
-    let is_verified = |candidate: &&Candidate| {
-        let verify = candidate.verify.as_ref();
-        verify.is_none_or(|regex| regex.is_match(user_agent))
-    };
+    let lowered = format!("^{}", user_agent.to_lowercase());
 
-    let gated = matchers
+    let best = matchers
         .automaton
-        .find_overlapping_iter(user_agent)
-        .map(|found| &matchers.candidates[found.pattern()])
-        .find(is_verified)
-        .map(|candidate| candidate.crawler);
-    let crawler = gated.or_else(|| {
-        let (crawler, _) = matchers
-            .ungated
-            .iter()
-            .find(|(_, regex)| regex.is_match(user_agent))?;
-        Some(*crawler)
-    })?;
+        .find_overlapping_iter(&lowered)
+        .map(|found| found.pattern().as_usize())
+        .filter(|&index| {
+            let rest = &matchers.candidates[index].rest;
+            rest.iter().all(|part| lowered.contains(part))
+        })
+        .min()?;
 
-    Some(&CRAWLERS[crawler])
+    Some(&CRAWLERS[matchers.candidates[best].crawler])
 }

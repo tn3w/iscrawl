@@ -1,40 +1,29 @@
 #![cfg(feature = "database")]
 
-use iscrawl::crawler_info;
+use iscrawl::{Rule, crawler_info};
 use std::fs;
 
-const KNOWN_CRAWLERS: &[(&str, &str, &str)] = &[
+const KNOWN_CRAWLERS: &[(&str, &str)] = &[
     (
         "Googlebot/2.1 (+http://www.google.com/bot.html)",
-        "Googlebot\\/",
         "search-engine",
     ),
-    (
-        "Mozilla/5.0 (compatible; bingbot/2.0)",
-        "bingbot",
-        "search-engine",
-    ),
-    (
-        "Mozilla/5.0 (compatible; YandexBot/3.0)",
-        "YandexBot",
-        "search-engine",
-    ),
-    ("DuckDuckBot/1.1", "DuckDuckBot", "search-engine"),
-    ("Baiduspider/2.0", "Baiduspider", "search-engine"),
-    ("Slackbot-LinkExpanding 1.0", "Slackbot", "social-preview"),
-    ("facebookexternalhit/1.1", "facebook", "social-preview"),
-    ("curl/7.81.0", "^curl", "http-library"),
+    ("Mozilla/5.0 (compatible; bingbot/2.0)", "search-engine"),
+    ("Mozilla/5.0 (compatible; YandexBot/3.0)", "search-engine"),
+    ("DuckDuckBot/1.1", "search-engine"),
+    ("Baiduspider/2.0", "search-engine"),
+    ("Slackbot-LinkExpanding 1.0", "social-preview"),
+    ("facebookexternalhit/1.1", "social-preview"),
+    ("curl/7.81.0", "http-library"),
     (
         "Mozilla/5.0 (compatible; AhrefsBot/7.0; +http://ahrefs.com/robot/)",
-        "Ahrefs(Bot|SiteAudit)",
         "seo",
     ),
-    (
-        "Mozilla/5.0 (compatible; SemrushBot/7~bl)",
-        "S[eE][mM]rushBot",
-        "seo",
-    ),
+    ("Mozilla/5.0 (compatible; SemrushBot/7~bl)", "seo"),
 ];
+
+const GOOGLEBOT: &str = "Google's main web crawling bot for search indexing";
+const CURL: &str = "cURL command-line tool for HTTP requests";
 
 const BROWSERS: &[&str] = &[
     "Mozilla/5.0 (X11; Linux x86_64; rv:115.0) Gecko/20100101 Firefox/115.0",
@@ -53,23 +42,19 @@ fn load(file: &str) -> Vec<String> {
 fn googlebot_info_has_all_fields() {
     let info = crawler_info("Googlebot/2.1 (+http://www.google.com/bot.html)").unwrap();
 
-    assert_eq!(info.pattern, "Googlebot\\/");
+    assert!(matches!(&info.rules[0], Rule::Part(part) if part == "googlebot/"));
     assert_eq!(info.url.as_deref(), Some("http://www.google.com/bot.html"));
-    assert_eq!(
-        info.description,
-        "Google's main web crawling bot for search indexing"
-    );
+    assert_eq!(info.description, GOOGLEBOT);
     assert_eq!(info.tags, ["search-engine"]);
     assert!(info.rdns.contains(&".googlebot.com".to_string()));
 }
 
 #[test]
-fn known_crawlers_match_expected_pattern_and_tag() {
-    for (user_agent, pattern, tag) in KNOWN_CRAWLERS {
+fn known_crawlers_match_expected_tag() {
+    for (user_agent, tag) in KNOWN_CRAWLERS {
         let info =
             crawler_info(user_agent).unwrap_or_else(|| panic!("no info: {user_agent}"));
 
-        assert_eq!(info.pattern, *pattern, "{user_agent}");
         assert!(
             info.tags.iter().any(|candidate| candidate == tag),
             "{user_agent}"
@@ -100,17 +85,19 @@ fn empty_and_unknown_inputs_have_no_info() {
 }
 
 #[test]
-fn matching_is_case_sensitive() {
-    assert!(crawler_info("Googlebot/2.1").is_some());
-    assert!(crawler_info("googlebot/2.1").is_none());
+fn matching_is_case_insensitive() {
+    let upper = crawler_info("GOOGLEBOT/2.1").unwrap();
+    let lower = crawler_info("googlebot/2.1").unwrap();
+
+    assert!(std::ptr::eq(upper, lower));
 }
 
 #[test]
 fn anchored_pattern_only_matches_at_start() {
-    assert_eq!(crawler_info("curl/7.81.0").unwrap().pattern, "^curl");
+    assert_eq!(crawler_info("curl/7.81.0").unwrap().description, CURL);
     assert_ne!(
-        crawler_info("Mozilla/5.0 curl/7.81.0").map(|info| info.pattern.as_str()),
-        Some("^curl")
+        crawler_info("Mozilla/5.0 curl/7.81.0").map(|info| info.description.as_str()),
+        Some(CURL)
     );
 }
 
@@ -159,7 +146,7 @@ fn every_returned_record_is_complete() {
             continue;
         };
 
-        assert!(!info.pattern.is_empty(), "{user_agent}");
+        assert!(!info.rules.is_empty(), "{user_agent}");
         assert!(!info.description.is_empty(), "{user_agent}");
         assert!(!info.tags.is_empty(), "{user_agent}");
     }
@@ -169,12 +156,14 @@ fn every_returned_record_is_complete() {
 fn concurrent_first_use_is_consistent() {
     let threads: Vec<_> = (0..8)
         .map(|_| {
-            std::thread::spawn(|| crawler_info("Googlebot/2.1").unwrap().pattern.clone())
+            std::thread::spawn(|| {
+                crawler_info("Googlebot/2.1").unwrap().description.clone()
+            })
         })
         .collect();
 
     for thread in threads {
-        assert_eq!(thread.join().unwrap(), "Googlebot\\/");
+        assert_eq!(thread.join().unwrap(), GOOGLEBOT);
     }
 }
 
@@ -187,11 +176,8 @@ fn info_is_independent_of_heuristic() {
 }
 
 #[test]
-fn regex_patterns_verified_after_literal_gate() {
-    let semrush = crawler_info("SemrushBot/7").unwrap();
-    assert_eq!(semrush.pattern, "S[eE][mM]rushBot");
-    assert!(crawler_info("SEMRUSHBOT/7").is_none());
+fn nested_rules_require_every_part() {
     assert!(crawler_info("Ahrefs").is_none());
-    assert!(crawler_info("PixCCriteo").is_none());
+    assert!(crawler_info("Criteo").is_none());
     assert!(crawler_info("Pix and Criteo").is_some());
 }

@@ -10,14 +10,14 @@ Fast crawler/bot detection from User-Agent strings. ~155 ns cold, ~5 ns warm.
 
 ```toml
 [dependencies]
-iscrawl = "1.2"
+iscrawl = "2.0"
 ```
 
-With Crawlerdex metadata lookup:
+With [uaid](https://github.com/tn3w/uaid) metadata lookup:
 
 ```toml
 [dependencies]
-iscrawl = { version = "1.2", features = ["database"] }
+iscrawl = { version = "2.0", features = ["database"] }
 ```
 
 Default build has no dependencies.
@@ -48,7 +48,7 @@ Matching is ASCII case-insensitive.
 ## Database
 
 `crawler_info(user_agent)` returns `Option<&'static CrawlerInfo>` from the bundled
-Crawlerdex database. Independent of `is_crawler`.
+uaid database. Independent of `is_crawler`.
 
 ```rust
 use iscrawl::crawler_info;
@@ -60,8 +60,8 @@ assert!(info.tags.iter().any(|tag| tag == "search-engine"));
 Update the database:
 
 ```bash
-curl -fsSL https://github.com/tn3w/Crawlerdex/releases/latest/download/crawlers.min.json \
-  -o crawlers.min.json
+curl -fsSL https://raw.githubusercontent.com/tn3w/uaid/main/crawlers.json \
+  | jq -c 'map(del(.instances, .addition_date, .depends_on))' > crawlers.min.json
 ```
 
 ## Why fast
@@ -69,8 +69,8 @@ curl -fsSL https://github.com/tn3w/Crawlerdex/releases/latest/download/crawlers.
 - Lowercase copy into a 512-byte stack buffer, no heap.
 - One pass: a 64 KiB table of needle-start byte pairs skips almost every position.
 - Thread-local 256-slot cache keyed by pointer and length, guarded by first/last 8 bytes.
-- `crawler_info`: one Aho-Corasick DFA over literal patterns and the required literal
-  (prefix or suffix) of each regex; a regex runs only when its literal appears.
+- `crawler_info`: one Aho-Corasick DFA over the longest part of every uaid rule; the
+  other parts are checked only on a hit. No regex.
   Costs ~13 MB and ~25 ms on first use.
 - `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`.
 

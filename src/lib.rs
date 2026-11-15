@@ -1,7 +1,7 @@
 //! Fast crawler/bot detection from User-Agent strings.
 //!
 //! [`is_crawler`] classifies with a keyword/engine heuristic. With the `database`
-//! feature, `crawler_info` returns matching Crawlerdex metadata.
+//! feature, `crawler_info` returns matching [uaid](https://github.com/tn3w/uaid) metadata.
 //!
 //! ```
 //! use iscrawl::is_crawler;
@@ -26,7 +26,7 @@
 mod database;
 
 #[cfg(feature = "database")]
-pub use database::{CrawlerInfo, crawler_info};
+pub use database::{CrawlerInfo, Rule, crawler_info};
 
 use std::cell::RefCell;
 
