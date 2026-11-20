@@ -1,6 +1,6 @@
 [package]
 name = "iscrawl"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2024"
 rust-version = "1.85"
 authors = ["tn3w <tn3w@protonmail.com>"]
